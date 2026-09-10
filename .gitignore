@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+models/
+drawings/
+spotify_config.json
+.env
+.env.*
+!.env.example
+.cache*
+*.pem
+*.key
+*token*.json
+*credentials*.json
+air-music-*.log
