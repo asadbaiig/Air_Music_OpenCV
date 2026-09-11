@@ -6,7 +6,11 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 from gestures import Gestures
-from spotify_client import SpotifyClient, SpotifyError, pkce_challenge
+from spotify_client import SpotifyClient, SpotifyError, PlaybackWorker, pkce_challenge, describe_error
+import socket
+import threading
+import queue
+from urllib.error import URLError
 from music_ui import MusicUI
 import cv2
 import numpy as np
@@ -60,17 +64,98 @@ class GestureTests(unittest.TestCase):
         self.assertIsNone(g.update(hand(shift=-0.4), 0.3))
         self.assertIsNone(g.update(hand(shift=-0.4), 1.3))
 
-    def test_volume_requires_hold_and_is_bounded(self):
+    def test_slow_swipe_with_one_folded_finger(self):
         g = Gestures()
-        pose = hand((True, False, False, False))
-        self.assertIsNone(g.update(pose, 0))
-        action, volume = g.update(pose, 0.7)
-        self.assertEqual(action, 'volume')
-        self.assertTrue(0 <= volume <= 100)
-        self.assertIsNone(g.update(pose, 0.8))
+        g.update(hand((True, True, True, False)), 0)
+        self.assertIsNone(g.update(hand((True, True, True, False), -0.08), 0.3))
+        self.assertEqual(g.update(hand((True, True, True, False), -0.17), 0.7), ('next', None))
+
+    def test_swipe_survives_short_pose_flicker(self):
+        g = Gestures()
+        g.update(hand(), 0)
+        g.update(hand(shift=0.08), 0.2)
+        g.update(hand((True, True, False, False), 0.1), 0.25)
+        self.assertEqual(g.update(hand(shift=0.17), 0.35), ('previous', None))
+
+    def test_swipe_requires_reset_and_vertical_motion_does_not_skip(self):
+        g = Gestures()
+        g.update(hand(), 0)
+        self.assertEqual(g.update(hand(shift=-0.2), 0.4), ('next', None))
+        self.assertIsNone(g.update(hand(shift=0.3), 2))
+        g.update(hand((False, False, False, False)), 2.1)
+        g.update(hand((False, False, False, False)), 2.3)
+        g.update(hand(), 2.4)
+        self.assertEqual(g.update(hand(shift=0.2), 2.8), ('previous', None))
+        g = Gestures()
+        g.update(hand(), 0)
+        vertical = hand(shift=0.15)
+        for point in vertical:
+            point.y += 0.25
+        self.assertIsNone(g.update(vertical, 0.4))
+
+    def test_two_fingers_increase_with_hold_and_repeat_delay(self):
+        g = Gestures()
+        pose = hand((True, True, False, False))
+        self.assertIsNone(g.update(pose, 0, 40))
+        self.assertIsNone(g.update(pose, 0.4, 40))
+        self.assertEqual(g.update(pose, 0.7, 40), ('volume_step', 5))
+        self.assertIsNone(g.update(pose, 0.9, 45))
+        self.assertEqual(g.update(pose, 1.6, 45), ('volume_step', 5))
+
+    def test_one_finger_decreases_and_direction_change_requires_hold(self):
+        g = Gestures()
+        up, down = hand((True, True, False, False)), hand((True, False, False, False))
+        g.update(up, 0, 40)
+        self.assertEqual(g.update(up, 0.7, 40), ('volume_step', 5))
+        self.assertIsNone(g.update(down, 0.8, 45))
+        self.assertEqual(g.update(down, 1.6, 45), ('volume_step', -5))
+
+    def test_volume_limits_missing_state_and_hand_loss(self):
+        g = Gestures()
+        up = hand((True, True, False, False))
+        g.update(up, 0, 100)
+        self.assertIsNone(g.update(up, 1, 100))
+        self.assertIsNone(g.update(None, 2, 50))
+        self.assertIsNone(g.update(up, 3, 50))
+        self.assertEqual(g.update(up, 3.7, 50), ('volume_step', 5))
+        g.update(up, 4, None)
+        self.assertIsNone(g.update(up, 5, None))
 
 
 class SpotifyTests(unittest.TestCase):
+    def test_manual_commands_wait_longer_and_require_login(self):
+        worker = PlaybackWorker.__new__(PlaybackWorker)
+        worker.lock = threading.Lock()
+        worker.commands = queue.Queue(maxsize=4)
+        worker.state = {'busy': False, 'message': ''}
+        worker.client = SpotifyClient('test-client')
+        worker.submit('next', manual=True)
+        self.assertTrue(worker.commands.empty())
+        self.assertIn('Connect Spotify first', worker.snapshot()['message'])
+        worker.client.access_token = 'test-token'
+        worker.submit('next', manual=True)
+        self.assertEqual(worker.commands.get_nowait()[3], 30)
+        worker.submit('next')
+        self.assertEqual(worker.commands.get_nowait()[3], 2)
+
+    def test_error_messages_distinguish_timeout_dns_and_port_conflict(self):
+        self.assertIn('timed out', describe_error(URLError(TimeoutError())))
+        self.assertIn('DNS', describe_error(URLError(socket.gaierror())))
+        self.assertIn('port 8888 is busy', describe_error(OSError(98, 'occupied')))
+        self.assertNotIn('private-token', describe_error(ValueError('private-token')))
+
+    def test_successful_poll_clears_stale_network_warning(self):
+        worker = PlaybackWorker.__new__(PlaybackWorker)
+        worker.lock = threading.Lock()
+        worker.state = {'message': 'Old network error'}
+        worker.recovering = True
+        worker.art_url = None
+        worker.client = self.client()
+        with patch.object(worker.client, 'api', return_value={}):
+            worker.poll()
+        self.assertIn('Connected', worker.snapshot()['message'])
+        self.assertFalse(worker.recovering)
+
     def test_refresh_preserves_previous_refresh_token(self):
         client = self.client()
         client.refresh_token = 'old-refresh'

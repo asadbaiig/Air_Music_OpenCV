@@ -116,8 +116,8 @@ class MusicUI:
         if progress > 0:
             d.rectangle((568, 482, 568+int(588*min(progress, 1)), 486), fill='#b9f47e')
         text(552, 509, 'THE CONTROLS', 12, '#b9f47e')
-        controls = [('PINCH + SPREAD', 'Volume. Fold ring and little fingers.'),
-                    ('SWIPE OPEN PALM', 'Left: next track. Right: previous.'),
+        controls = [('FINGER VOLUME', 'Two fingers: louder. One finger: quieter. Hold to repeat.'),
+                    ('SWIPE OPEN PALM', 'Left: next. Right: previous. Close hand to reset.'),
                     ('HOLD OPEN PALM', 'Pause. Hold thumbs-up to resume.')]
         for i, (title, caption) in enumerate(controls):
             y = 539 + 56*i

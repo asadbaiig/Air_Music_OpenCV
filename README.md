@@ -44,14 +44,21 @@ Keep one hand facing the camera. The preview is mirrored.
 
 | Gesture | Action |
 | --- | --- |
-| Fold ring/little fingers, pinch or spread thumb/index; hold half a second | Set volume |
+| Hold index + middle fingers up (V sign) | Increase volume by 5 points |
+| Hold only index finger up | Decrease volume by 5 points |
 | Swipe an open palm left | Next track |
 | Swipe an open palm right | Previous track |
 | Hold an open palm still for 0.8 seconds | Pause |
 | Hold thumbs-up for 0.6 seconds | Resume |
 
-Pause/resume fire once until you change pose. Swipes have a 1.2-second cooldown.
-Volume is normalized to palm size, with a five-point deadband and throttled requests.
+Pause/resume fire once until you change pose. Swipe an open hand across roughly
+one sixth of the preview within 0.9 seconds. Slight diagonal motion and a briefly
+missed finger are tolerated. After each swipe, close your hand briefly (or lower
+it out of view) to reset. Swipes also have a 1.2-second cooldown.
+Hold a volume pose for 0.6 seconds to start; it repeats at most once every 0.8
+seconds. Fold your other fingers. Lower your hand or change pose to stop generating
+steps (an already-sent request may still finish). No pinching or hand movement is
+needed. Each step reads Spotify's current volume before applying a bounded change.
 Gestures are heuristic and may need tuning for your hand and lighting. Volume control
 depends on support from the active Spotify device; the app reports unsupported devices.
 
@@ -80,7 +87,8 @@ and sends only playback commands to Spotify; no camera images are saved or uploa
 - Access denied: verify Premium, developer-app user access, and device restrictions.
 - Port busy: close another Air Music instance before connecting.
 - Camera trouble: use `--camera 0 --backend dshow`; close other camera apps.
-- Rate limits: the worker observes Spotify's Retry-After and drops stale commands.
+- Rate limits: the worker observes Spotify's Retry-After. Gesture commands expire
+  after two seconds; button commands wait up to 30 seconds. Expiry is reported.
 
 Fresh installation requires Python 3.11: create `.venv`, then install `requirements.txt`.
 The hand model downloads from Google on first run if it isn't already in `models/`.

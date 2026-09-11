@@ -97,14 +97,14 @@ def main():
                 result = detector.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB,
                                                              data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)), timestamp)
                 hand = result.hand_landmarks[0] if result.hand_landmarks else None
-                command = gestures.update(hand if enabled else None, time.monotonic())
+                state = demo if args.demo else worker.snapshot()
+                device = (state.get('playback') or {}).get('device') or {}
+                current_volume = device.get('volume_percent') if device.get('supports_volume') is not False else None
+                command = gestures.update(hand if enabled else None, time.monotonic(), current_volume,
+                                          frame.shape[1] / frame.shape[0])
                 if hand:
                     for point in hand:
                         cv2.circle(frame, (int(point.x*frame.shape[1]), int(point.y*frame.shape[0])), 3, (126, 244, 185), -1, cv2.LINE_AA)
-                    a, b = hand[4], hand[8]
-                    cv2.line(frame, (int(a.x*frame.shape[1]), int(a.y*frame.shape[0])),
-                             (int(b.x*frame.shape[1]), int(b.y*frame.shape[0])), (126, 244, 185), 2, cv2.LINE_AA)
-                state = demo if args.demo else worker.snapshot()
                 try:
                     _, _, view_width, view_height = cv2.getWindowImageRect(WINDOW)
                     if view_width > 0 and view_height > 0:
@@ -141,10 +141,13 @@ def main():
                         demo['message'] = f'Demo gesture: {name}' + (f' {value}%' if value is not None else '')
                         if name in ('play', 'pause'):
                             demo['playback']['is_playing'] = name == 'play'
+                        elif name == 'volume_step':
+                            device = demo['playback']['device']
+                            device['volume_percent'] = max(0, min(100, device['volume_percent'] + value))
                         elif name == 'volume':
                             demo['playback']['device']['volume_percent'] = value
                     else:
-                        worker.submit(*command)
+                        worker.submit(*command, manual=action is not None)
     finally:
         if worker:
             worker.close()

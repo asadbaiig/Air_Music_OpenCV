@@ -6,6 +6,8 @@ import io
 import json
 import queue
 import secrets
+import socket
+import ssl
 import threading
 import time
 from urllib.error import HTTPError, URLError
@@ -25,6 +27,31 @@ def pkce_challenge(verifier):
 
 class SpotifyError(Exception):
     pass
+
+
+def describe_error(error):
+    """Useful diagnostics without exposing URLs, OAuth codes, or tokens."""
+    if isinstance(error, SpotifyError):
+        return str(error)
+    reason = error.reason if isinstance(error, URLError) else error
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return 'Spotify TLS certificate check failed. Check system date and HTTPS inspection settings.'
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return 'Spotify request timed out. Retrying shortly.'
+    if isinstance(reason, socket.gaierror):
+        return 'Cannot resolve Spotify server address (DNS). Check DNS or VPN settings.'
+    code = getattr(reason, 'winerror', None) or getattr(reason, 'errno', None)
+    if code in (10048, 98, 48):
+        return 'Login port 8888 is busy. Close other Air Music instances, then reconnect.'
+    if code in (10013, 13):
+        return 'Connection permission denied. Check firewall or security software access for Python.'
+    if isinstance(reason, ConnectionRefusedError):
+        return 'Connection to Spotify was refused. Check proxy or firewall settings.'
+    if isinstance(reason, (ConnectionResetError, ConnectionAbortedError)):
+        return 'Spotify connection was interrupted. Retrying shortly.'
+    if isinstance(error, (ValueError, KeyError, TypeError)):
+        return 'Spotify returned an unexpected response. Reconnect; this is not necessarily an internet issue.'
+    return f'Spotify connection failed ({type(reason).__name__}' + (f', code {code}' if code else '') + '). Try reconnecting.'
 
 
 class SpotifyClient:
@@ -128,6 +155,7 @@ class PlaybackWorker:
                       'playback': {}, 'art': None, 'busy': False}
         self.pending_volume = None
         self.art_url = None
+        self.recovering = False
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
@@ -139,21 +167,29 @@ class PlaybackWorker:
         with self.lock:
             self.state.update(kwargs)
 
-    def submit(self, action, value=None):
+    def submit(self, action, value=None, manual=False):
         if self.snapshot()['busy']:
+            self.set(message='Finish Spotify sign-in before using playback controls.')
+            return
+        if action != 'connect' and not self.client.access_token:
+            self.set(message='Connect Spotify first, then start a song in Spotify.')
             return
         if action == 'volume':
             with self.lock:
                 self.pending_volume = max(0, min(100, int(value)))
             return
         try:
-            self.commands.put_nowait((action, value, time.monotonic()))
+            self.commands.put_nowait((action, value, time.monotonic(), 30 if manual or action == 'connect' else 2))
+            self.set(message=f'{action.capitalize()} queued for Spotify...')
         except queue.Full:
-            pass
+            self.set(message='Spotify is still processing controls. Wait, then try again.')
 
     def poll(self):
         playback = self.client.api('GET', '') or {}
         self.set(playback=playback, connected=True)
+        if self.recovering:
+            self.set(message='Connection restored.' if playback else 'Connected. Open Spotify and start a song.')
+            self.recovering = False
         item = playback.get('item') or {}
         images = (item.get('album') or item).get('images') or []
         url = images[0]['url'] if images else None
@@ -176,8 +212,9 @@ class PlaybackWorker:
                 continue
             try:
                 try:
-                    action, value, created = self.commands.get_nowait()
-                    if now - created > 2:
+                    action, value, created, ttl = self.commands.get_nowait()
+                    if now - created > ttl:
+                        self.set(message='Control expired while Spotify was busy. Please try again.')
                         continue
                 except queue.Empty:
                     action = None
@@ -192,6 +229,16 @@ class PlaybackWorker:
                     self.set(connected=True, message='Connected. Open Spotify and start a song.')
                     poll_at = 0
                 elif action:
+                    if action == 'volume_step':
+                        # Base each step on Spotify's current level, not a delayed UI value.
+                        playback = self.client.api('GET', '') or {}
+                        device = playback.get('device') or {}
+                        current = device.get('volume_percent')
+                        if current is None or device.get('supports_volume') is False:
+                            raise SpotifyError('Volume unavailable on this Spotify device.')
+                        self.set(playback=playback)
+                        with self.lock:
+                            self.pending_volume = max(0, min(100, current + value))
                     methods = {'play': ('PUT', '/play'), 'pause': ('PUT', '/pause'),
                                'next': ('POST', '/next'), 'previous': ('POST', '/previous')}
                     if action in methods:
@@ -206,13 +253,17 @@ class PlaybackWorker:
                         if not device or device.get('supports_volume') is False:
                             raise SpotifyError('This Spotify device does not expose volume control.')
                         self.client.api('PUT', '/volume?' + urlencode({'volume_percent': volume}))
+                        playback = self.snapshot()['playback'].copy()
+                        playback['device'] = dict(playback.get('device') or {}, volume_percent=volume)
+                        self.set(playback=playback)
                         self.set(message=f'Volume set to {volume}%')
                         volume_at = now + 0.65
                 if self.client.access_token and now >= poll_at:
                     poll_at = now + 2
                     self.poll()
-            except (SpotifyError, URLError, OSError, ValueError, KeyError) as error:
-                self.set(message=str(error) if isinstance(error, SpotifyError) else 'Connection problem. Check internet and app settings.')
+            except (SpotifyError, URLError, OSError, ValueError, KeyError, TypeError) as error:
+                self.recovering = not isinstance(error, SpotifyError)
+                self.set(message=describe_error(error))
                 poll_at = time.monotonic() + 5
 
     def close(self):
