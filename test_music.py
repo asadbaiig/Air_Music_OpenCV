@@ -1,4 +1,5 @@
 import io
+import json
 import time
 import unittest
 from types import SimpleNamespace
@@ -29,6 +30,23 @@ def hand(raised=(True, True, True, True), shift=0):
 
 
 class RenderingTests(unittest.TestCase):
+    def test_playlist_selection_song_click_and_scrolling(self):
+        from air_music import demo_state
+        ui = MusicUI()
+        state = demo_state()
+        frame = np.zeros((480,640,3),dtype=np.uint8)
+        ui.render(frame,state,'Ready',0,True,True)
+        ui.mouse(cv2.EVENT_LBUTTONDOWN,100,270,0,None)
+        self.assertEqual(ui.actions.pop()[0],'playlist')
+        ui.mouse(cv2.EVENT_LBUTTONDOWN,400,367,0,None)
+        action, payload = ui.actions.pop()
+        self.assertEqual(action,'play_track')
+        self.assertEqual(payload['position'],0)
+        ui.mouse(cv2.EVENT_MOUSEWHEEL,400,500,(-120 & 0xffff)<<16,None)
+        ui.render(frame,state,'Ready',0,True,True)
+        ui.mouse(cv2.EVENT_LBUTTONDOWN,400,367,0,None)
+        self.assertEqual(ui.actions.pop()[1]['position'],2)
+
     def test_scaled_render_and_click_coordinates(self):
         ui = MusicUI()
         ui.set_viewport(1500, 1000)
@@ -123,6 +141,50 @@ class GestureTests(unittest.TestCase):
 
 
 class SpotifyTests(unittest.TestCase):
+    def library_worker(self):
+        worker = PlaybackWorker.__new__(PlaybackWorker)
+        worker.lock = threading.Lock()
+        worker.state = {}
+        worker.client = self.client()
+        return worker
+
+    def test_playlist_pagination_and_null_entries(self):
+        worker = self.library_worker()
+        with patch.object(worker.client,'api',return_value={
+                'items':[None,{'id':'abc','name':'Focus'}], 'offset':50,'total':51}) as request:
+            worker.load_library(50)
+        self.assertIn('offset=50',request.call_args.args[1])
+        self.assertEqual(len(worker.state['playlists']),1)
+        self.assertFalse(worker.state['library_loading'])
+
+    def test_playlist_items_preserve_positions_and_unavailable_rows(self):
+        worker = self.library_worker()
+        with patch.object(worker.client,'api',return_value={'items':[
+                {'item':{'uri':'spotify:track:one','name':'One'}}, None,
+                {'track':{'uri':'spotify:track:two','is_playable':False}}], 'total':53}):
+            worker.load_tracks({'playlist':{'id':'abc'},'offset':50})
+        rows = worker.state['tracks']
+        self.assertEqual([r['position'] for r in rows],[50,51,52])
+        self.assertEqual([r['playable'] for r in rows],[True,False,False])
+        self.assertFalse(worker.state['tracks_loading'])
+
+    def test_library_access_error_is_visible_and_clears_loading(self):
+        worker = self.library_worker()
+        with patch.object(worker.client,'api',side_effect=SpotifyError('Denied')):
+            worker.load_tracks({'playlist':{'id':'abc'}})
+        self.assertIn('Reconnect',worker.state['library_message'])
+        self.assertFalse(worker.state['tracks_loading'])
+
+    def test_playlist_endpoint_and_play_context_body(self):
+        client = self.client()
+        with patch('spotify_client.urlopen',return_value=io.BytesIO(b'{}')) as request:
+            client.api('GET','/me/playlists?limit=50')
+            self.assertEqual(request.call_args.args[0].full_url,'https://api.spotify.com/v1/me/playlists?limit=50')
+        body = {'context_uri':'spotify:playlist:abc','offset':{'position':51}}
+        with patch('spotify_client.urlopen',return_value=io.BytesIO(b'')) as request:
+            client.api('PUT','/play',body=body)
+            self.assertEqual(json.loads(request.call_args.args[0].data),body)
+
     def test_manual_commands_wait_longer_and_require_login(self):
         worker = PlaybackWorker.__new__(PlaybackWorker)
         worker.lock = threading.Lock()

@@ -48,10 +48,29 @@ def ensure_model():
 
 
 def demo_state():
-    return {'connected': False, 'art': None, 'message': 'Demo only: no Spotify requests are sent.',
+    playlists = [{'id': 'demo'+str(i), 'uri': 'spotify:playlist:demo'+str(i), 'name': name,
+                  'owner': {'display_name': 'Air Music demo'}} for i,name in enumerate(
+                  ('Late night focus', 'Morning light', 'On repeat', 'Weekend drive', 'Quiet hours'))]
+    tracks = [{'track': {'uri': 'spotify:track:demo'+str(i), 'name': name,
+                         'artists': [{'name': artist}], 'album': {'name': album}, 'duration_ms': 180000+i*11000},
+               'position': i, 'playable': True} for i,(name,artist,album) in enumerate([
+                  ('After the rain', 'Paper Satellites', 'Night windows'),
+                  ('Soft signals', 'North Avenue', 'Small hours'),
+                  ('Coastline', 'The Slow Current', 'Open water'),
+                  ('Another sky', 'Luna Park', 'Blue room'),
+                  ('Stay a little longer', 'Paper Satellites', 'Night windows'),
+                  ('Homeward', 'North Avenue', 'Small hours'),
+                  ('Daybreak', 'Luna Park', 'Blue room'),
+                  ('Passing lights', 'The Slow Current', 'Open water')])]
+    return {'connected': False, 'art': None, 'message': 'Demo only: sample playlists and songs; no Spotify requests.',
+            'playlists': playlists, 'selected_playlist': playlists[0], 'tracks': tracks,
+            'library_total': len(playlists), 'tracks_total': len(tracks),
+            'library_message': 'Click any demo song to preview the player.',
             'playback': {'is_playing': True, 'progress_ms': 65000,
                          'device': {'name': 'Demo player', 'volume_percent': 40},
-                         'item': {'name': 'Your next favorite song', 'artists': [{'name': 'Air Music demo'}], 'duration_ms': 240000}}}
+                         'item': tracks[0]['track']}}
+
+
 
 
 def main():
@@ -77,7 +96,11 @@ def main():
         running_mode=mp.tasks.vision.RunningMode.VIDEO, num_hands=1,
         min_hand_detection_confidence=0.65, min_hand_presence_confidence=0.65)
     camera = cv2.VideoCapture(args.camera, {'dshow': cv2.CAP_DSHOW, 'msmf': cv2.CAP_MSMF, 'auto': cv2.CAP_ANY}[args.backend])
+    camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     worker = None
+    TARGET_FRAME_TIME = 1.0 / 30.0
     try:
         if not camera.isOpened():
             raise RuntimeError('Cannot open camera. Close Windows Camera and try --camera 0 --backend dshow.')
@@ -89,14 +112,23 @@ def main():
         cv2.setMouseCallback(WINDOW, ui.mouse)
         with mp.tasks.vision.HandLandmarker.create_from_options(options) as detector:
             while True:
+                frame_start = time.monotonic()
                 ok, frame = camera.read()
                 if not ok or frame is None:
                     raise RuntimeError('Camera stopped delivering frames.')
                 frame = cv2.flip(frame, 1)
-                timestamp = max(timestamp+1, time.monotonic_ns()//1_000_000)
-                result = detector.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB,
-                                                             data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)), timestamp)
-                hand = result.hand_landmarks[0] if result.hand_landmarks else None
+                hand = None
+                if enabled:
+                    # Fast MediaPipe inference on 320px downscaled frame
+                    h, w = frame.shape[:2]
+                    det_w = 320
+                    det_h = max(1, int(h * (det_w / max(1, w))))
+                    det_frame = cv2.resize(frame, (det_w, det_h), interpolation=cv2.INTER_LINEAR)
+                    timestamp = max(timestamp + 1, time.monotonic_ns() // 1_000_000)
+                    result = detector.detect_for_video(
+                        mp.Image(image_format=mp.ImageFormat.SRGB,
+                                 data=cv2.cvtColor(det_frame, cv2.COLOR_BGR2RGB)), timestamp)
+                    hand = result.hand_landmarks[0] if result.hand_landmarks else None
                 state = demo if args.demo else worker.snapshot()
                 device = (state.get('playback') or {}).get('device') or {}
                 current_volume = device.get('volume_percent') if device.get('supports_volume') is not False else None
@@ -113,12 +145,21 @@ def main():
                     pass
                 display = ui.render(frame, state, gestures.label, gestures.progress, enabled, args.demo)
                 cv2.imshow(WINDOW, display)
-                key = cv2.waitKey(1) & 0xFF
+                elapsed = time.monotonic() - frame_start
+                wait_ms = max(1, int((TARGET_FRAME_TIME - elapsed) * 1000))
+                key = cv2.waitKey(wait_ms) & 0xFF
                 if key in (27, ord('q')) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) == 0:
                     break
                 action = ui.actions.pop(0) if ui.actions else {ord('c'): 'connect', ord('g'): 'gestures',
                            ord(' '): 'toggle', ord('n'): 'next', ord('p'): 'previous'}.get(key)
-                if action == 'gestures':
+                if isinstance(action, tuple):
+                    if action[0] == 'open_url':
+                        if action[1].startswith('https://open.spotify.com/'):
+                            webbrowser.open(action[1])
+                        command = None
+                    else:
+                        command = action
+                elif action == 'gestures':
                     enabled = not enabled
                     gestures = Gestures()
                     command = None
@@ -139,7 +180,19 @@ def main():
                     if args.demo:
                         name, value = command
                         demo['message'] = f'Demo gesture: {name}' + (f' {value}%' if value is not None else '')
-                        if name in ('play', 'pause'):
+                        if name == 'playlist':
+                            demo['selected_playlist'] = value['playlist']
+                        elif name == 'play_track':
+                            demo['playback']['item'] = demo['tracks'][value['position']]['track']
+                            demo['playback']['progress_ms'] = 0
+                            demo['playback']['is_playing'] = True
+                        elif name in ('next', 'previous'):
+                            uri = demo['playback']['item']['uri']
+                            index = next((i for i,r in enumerate(demo['tracks']) if r['track']['uri'] == uri),0)
+                            index = (index+(1 if name == 'next' else -1)) % len(demo['tracks'])
+                            demo['playback']['item'] = demo['tracks'][index]['track']
+                            demo['playback']['progress_ms'] = 0
+                        elif name in ('play', 'pause'):
                             demo['playback']['is_playing'] = name == 'play'
                         elif name == 'volume_step':
                             device = demo['playback']['device']

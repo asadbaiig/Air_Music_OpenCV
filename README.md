@@ -2,6 +2,24 @@
 
 A local webcam remote for Spotify Premium, with a desktop Now Playing screen.
 
+## Library and player layout
+
+Browse your playlists in the left sidebar, select one to see songs, and click a
+song to play it. The bottom playback bar remains visible while you browse.
+Use the mouse wheel over the library or song list to scroll. Back/More buttons
+load another page when there are more than 50 playlists or songs.
+
+Reconnect Spotify after updating to grant `playlist-read-private` and
+`playlist-read-collaborative` access. Use Refresh to reload your library. Some
+playlists may be restricted by Spotify's API access rules; loading errors appear
+in the song panel. Unavailable/local tracks are shown but cannot be played here.
+Playlist selection alone does not start playback. Clicking a song starts it in
+its playlist context, so working next/previous controls continue through it.
+
+The right camera panel displays gesture status and a hold-progress indicator.
+The swipe and volume gesture logic is unchanged by this layout update. Demo mode
+includes clearly labeled sample playlists/songs; normal mode displays Spotify data.
+
 The interface is DPI-aware on Windows and rerenders at the window's current size.
 Text and controls use supersampling for smoother edges; camera and artwork scaling
 use Lanczos filtering. Restart the app after updating to enable the DPI fix.

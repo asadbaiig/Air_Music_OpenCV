@@ -18,7 +18,8 @@ import webbrowser
 from PIL import Image
 
 REDIRECT_URI = 'http://127.0.0.1:8888/callback'
-SCOPES = 'user-read-playback-state user-modify-playback-state'
+SCOPES = ('user-read-playback-state user-modify-playback-state '
+          'playlist-read-private playlist-read-collaborative')
 
 
 def pkce_challenge(verifier):
@@ -114,16 +115,19 @@ class SpotifyClient:
         self.token(dict(grant_type='authorization_code', code=result['code'],
                         redirect_uri=REDIRECT_URI, code_verifier=verifier))
 
-    def api(self, method, path, retry=True):
+    def api(self, method, path, retry=True, body=None):
         if time.monotonic() < self.retry_at:
             raise SpotifyError('Spotify rate limit: waiting before more requests.')
         if not self.access_token:
             raise SpotifyError('Connect Spotify first.')
         if time.monotonic() >= self.expires:
             self.token(dict(grant_type='refresh_token', refresh_token=self.refresh_token))
-        request = Request('https://api.spotify.com/v1/me/player' + path, method=method,
-                          headers={'Authorization': 'Bearer ' + self.access_token},
-                          data=b'' if method in ('PUT', 'POST') else None)
+        resource = path if path.startswith(('/me/', '/playlists/')) else '/me/player' + path
+        request = Request('https://api.spotify.com/v1' + resource, method=method,
+                          headers={'Authorization': 'Bearer ' + self.access_token,
+                                   'Content-Type': 'application/json'},
+                          data=json.dumps(body).encode() if body is not None else
+                          (b'' if method in ('PUT', 'POST') else None))
         try:
             with urlopen(request, timeout=8) as response:
                 raw = response.read()
@@ -131,7 +135,7 @@ class SpotifyClient:
         except HTTPError as error:
             if error.code == 401 and retry:
                 self.expires = 0
-                return self.api(method, path, retry=False)
+                return self.api(method, path, retry=False, body=body)
             if error.code == 429:
                 try:
                     delay = max(1, float(error.headers.get('Retry-After', '5')))
@@ -152,7 +156,11 @@ class PlaybackWorker:
         self.commands = queue.Queue(maxsize=4)
         self.lock = threading.Lock()
         self.state = {'message': 'Connect Spotify to get started', 'connected': False,
-                      'playback': {}, 'art': None, 'busy': False}
+                      'playback': {}, 'art': None, 'busy': False,
+                      'playlists': [], 'library_offset': 0, 'library_total': 0,
+                      'selected_playlist': None, 'tracks': [], 'tracks_offset': 0,
+                      'tracks_total': 0, 'library_loading': False, 'tracks_loading': False,
+                      'library_message': 'Connect Spotify to load your library.'}
         self.pending_volume = None
         self.art_url = None
         self.recovering = False
@@ -204,6 +212,50 @@ class PlaybackWorker:
                 except (OSError, ValueError):
                     pass
 
+    def load_library(self, offset=0):
+        self.set(library_loading=True, library_message='Loading your playlists...')
+        try:
+            page = self.client.api('GET', f'/me/playlists?limit=50&offset={max(0, int(offset))}') or {}
+            self.set(playlists=[p for p in page.get('items', []) if p],
+                     library_offset=page.get('offset', offset), library_total=page.get('total', 0),
+                     library_message='Select a playlist to browse its songs.' if page.get('items') else 'No playlists found in your library.')
+        except (SpotifyError, OSError, ValueError, KeyError, TypeError) as error:
+            self.set(library_message=describe_error(error))
+        finally:
+            self.set(library_loading=False)
+
+    def load_tracks(self, selection):
+        playlist, offset = selection['playlist'], max(0, int(selection.get('offset', 0)))
+        playlist_id = playlist['id']
+        if not playlist_id.isalnum():
+            raise SpotifyError('Invalid playlist ID.')
+        self.set(selected_playlist=playlist, playlist_art=None, tracks=[], tracks_loading=True,
+                 tracks_offset=offset, tracks_total=0, library_message='Loading songs...')
+        try:
+            page = self.client.api('GET', f'/playlists/{playlist_id}/items?limit=50&offset={offset}') or {}
+            rows = []
+            for index, entry in enumerate(page.get('items') or []):
+                entry = entry or {}
+                track = entry.get('item') or entry.get('track') or {}
+                rows.append({'track': track, 'position': offset+index,
+                             'playable': bool(track.get('uri')) and not entry.get('is_local')
+                             and not track.get('is_local') and track.get('is_playable') is not False})
+            self.set(tracks=rows, tracks_total=page.get('total', len(rows)),
+                     library_message='Click a song to play it on your active Spotify device.' if rows else 'This playlist has no available songs.')
+            images = playlist.get('images') or []
+            if images and urlsplit(images[0]['url']).scheme == 'https':
+                try:
+                    with urlopen(images[0]['url'], timeout=4) as response:
+                        art = Image.open(io.BytesIO(response.read(5_000_000))).convert('RGB')
+                    self.set(playlist_art=art)
+                except (OSError, ValueError):
+                    pass
+        except (SpotifyError, OSError, ValueError, KeyError, TypeError) as error:
+            self.set(library_message='Cannot load songs. Reconnect for playlist access; Spotify may restrict this playlist.'
+                     if isinstance(error, SpotifyError) else describe_error(error))
+        finally:
+            self.set(tracks_loading=False)
+
     def run(self):
         poll_at, volume_at = 0, 0
         while not self.stop.wait(0.05):
@@ -227,8 +279,19 @@ class PlaybackWorker:
                     if self.stop.is_set():
                         break
                     self.set(connected=True, message='Connected. Open Spotify and start a song.')
+                    self.load_library()
                     poll_at = 0
                 elif action:
+                    if action == 'library':
+                        self.load_library(value or 0)
+                    elif action == 'playlist':
+                        self.load_tracks(value)
+                    elif action == 'play_track':
+                        self.client.api('PUT', '/play', body={
+                            'context_uri': value['context_uri'],
+                            'offset': {'position': int(value['position'])}})
+                        self.set(message='Song sent to Spotify')
+                        poll_at = now+0.4
                     if action == 'volume_step':
                         # Base each step on Spotify's current level, not a delayed UI value.
                         playback = self.client.api('GET', '') or {}
