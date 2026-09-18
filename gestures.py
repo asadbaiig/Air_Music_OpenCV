@@ -36,7 +36,15 @@ class Gestures:
             return math.sqrt(sum((getattr(hand[a], axis) - getattr(hand[b], axis)) ** 2 for axis in ('x', 'y', 'z')))
         up = [distance(t, 0) > distance(t - 2, 0) * 1.14 for t in (8, 12, 16, 20)]
         thumbs_up = not any(up) and hand[4].y < hand[3].y - 0.025 and distance(4, 0) > distance(3, 0) * 1.15
-        if up == [True, True, False, False]:
+        idx_dx = hand[8].x - hand[5].x
+        idx_dy = hand[8].y - hand[5].y
+        idx_extended = up[0] or distance(8, 5) > 0.14
+        other_curled = not up[1] and not up[2] and not up[3]
+        is_pointing_horizontal = idx_extended and other_curled and abs(idx_dx) > 0.08 and abs(idx_dx) > abs(idx_dy) * 0.85
+
+        if is_pointing_horizontal:
+            pose = 'point_right' if idx_dx > 0 else 'point_left'
+        elif up == [True, True, False, False]:
             pose = 'volume_up'
         elif up == [True, False, False, False]:
             pose = 'volume_down'
@@ -60,7 +68,16 @@ class Gestures:
             self.path.clear()
             self.swipe_fired = False
             self.palm_exit_since = None
-        if pose in ('volume_up', 'volume_down'):
+        if pose in ('point_right', 'point_left'):
+            action_name = 'next' if pose == 'point_right' else 'previous'
+            self.label = 'Point right: Next song' if pose == 'point_right' else 'Point left: Previous song'
+            self.progress = min(1, (now - self.since) / 0.4)
+            if now - self.since >= 0.4 and not self.fired and now >= self.cooldown:
+                self.fired = True
+                self.cooldown = now + 1.0
+                self.label = f'Skipped to {action_name} track'
+                return (action_name, None)
+        elif pose in ('volume_up', 'volume_down'):
             if current_volume is None:
                 self.since = now
                 self.label = 'Volume unavailable - start Spotify on a supported device'

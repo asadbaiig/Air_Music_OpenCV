@@ -58,6 +58,26 @@ class RenderingTests(unittest.TestCase):
 
 
 class GestureTests(unittest.TestCase):
+    def test_point_right_plays_next_song(self):
+        g = Gestures()
+        pose = hand((True, False, False, False))
+        pose[8].x = pose[5].x + 0.25
+        pose[8].y = pose[5].y
+        self.assertIsNone(g.update(pose, 0))
+        self.assertIsNone(g.update(pose, 0.2))
+        self.assertEqual(g.update(pose, 0.45), ('next', None))
+        self.assertIsNone(g.update(pose, 0.6))
+
+    def test_point_left_plays_previous_song(self):
+        g = Gestures()
+        pose = hand((True, False, False, False))
+        pose[8].x = pose[5].x - 0.25
+        pose[8].y = pose[5].y
+        self.assertIsNone(g.update(pose, 0))
+        self.assertIsNone(g.update(pose, 0.2))
+        self.assertEqual(g.update(pose, 0.45), ('previous', None))
+        self.assertIsNone(g.update(pose, 0.6))
+
     def test_thumbs_up_resumes_once(self):
         g = Gestures()
         pose = hand((False, False, False, False))

@@ -1,6 +1,7 @@
 """Air Music desktop dashboard. Artwork is displayed uncropped and unmodified."""
 from pathlib import Path
 import math
+import random
 import time
 import cv2
 import numpy as np
@@ -28,6 +29,10 @@ class SmoothDraw:
     def polygon(self, points, **kwargs):
         scaled = [tuple(round(v * self.scale) for v in pt) for pt in points]
         self.draw.polygon(scaled, **kwargs)
+
+    def line(self, points, **kwargs):
+        scaled = [tuple(round(v * self.scale) for v in pt) for pt in points]
+        self.draw.line(scaled, **kwargs)
 
     def text(self, position, value, **kwargs):
         self.draw.text(self.coords(position), value, **kwargs)
@@ -59,6 +64,9 @@ class MusicUI:
     CARD_BORDER = '#282840'
     TOPBAR = '#0e0e1a'
     PLAYLIST_COLORS = ['#1e3a5e', '#3a1e5e', '#5e3a1e', '#1e5e3a', '#5e1e3a']
+    VOLUME_TRACK = '#2a2a3e'
+    VOLUME_FILL = '#1ed760'
+    VOLUME_KNOB = '#e8e8f0'
 
     def __init__(self):
         self.actions, self.buttons = [], []
@@ -69,10 +77,22 @@ class MusicUI:
         self.fonts = {}
         self.output_scale = 1.0
         self.font_scale = None
-        self.prepare_fonts(2.0)
+        self.prepare_fonts(1.0)
         self._chrome = None
         self._chrome_scale = None
+        self._art_cache = {}
         self._smooth_progress = 0.0
+        # Continuous playback progress interpolation
+        self._last_progress_ms = 0
+        self._last_progress_time = 0.0
+        self._last_track_uri = None
+        self._last_is_playing = False
+        # Animated equalizer bars
+        self._eq_bars = [random.random() for _ in range(4)]
+        self._eq_targets = [random.random() for _ in range(4)]
+        self._eq_last_update = 0.0
+        # Volume slider drag state
+        self._volume_dragging = False
 
     def set_viewport(self, width, height):
         # Keep controls usable on small windows while allowing large displays to
@@ -124,14 +144,67 @@ class MusicUI:
             elif x < 846:
                 self.track_scroll = max(0, min(max(0, self.track_count-6), self.track_scroll+step))
             return
+        # Volume slider interaction
+        if 820 <= x <= 1050 and 776 <= y <= 790:
+            if event == cv2.EVENT_LBUTTONDOWN:
+                self._volume_dragging = True
+                vol = max(0, min(100, int((x - 830) / 200 * 100)))
+                self.actions.append(('volume_set', vol))
+                return
+            elif event == cv2.EVENT_MOUSEMOVE and self._volume_dragging:
+                vol = max(0, min(100, int((x - 830) / 200 * 100)))
+                self.actions.append(('volume_set', vol))
+                return
+        if event in (cv2.EVENT_LBUTTONUP, cv2.EVENT_MOUSEMOVE) and self._volume_dragging:
+            if event == cv2.EVENT_LBUTTONUP:
+                self._volume_dragging = False
+            return
         if event == cv2.EVENT_LBUTTONDOWN:
             for rect, action in self.buttons:
                 if rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]:
                     self.actions.append(action)
                     break
 
+    def _interpolate_position(self, playback, item, now_t):
+        """Interpolate playback position locally between API polls for silky-smooth progress."""
+        raw_ms = playback.get('progress_ms') or 0
+        track_uri = item.get('uri', '')
+        is_playing = bool(playback.get('is_playing'))
+
+        # Detect state changes (track change, seek, play/pause toggle)
+        if track_uri != self._last_track_uri or abs(raw_ms - self._last_progress_ms) > 3000:
+            self._last_progress_ms = raw_ms
+            self._last_progress_time = now_t
+            self._last_track_uri = track_uri
+            self._last_is_playing = is_playing
+            return raw_ms
+
+        # Update reference point when we get a new API value
+        if raw_ms != self._last_progress_ms:
+            self._last_progress_ms = raw_ms
+            self._last_progress_time = now_t
+            self._last_is_playing = is_playing
+
+        if is_playing:
+            elapsed = now_t - self._last_progress_time
+            total = item.get('duration_ms') or 999999
+            return min(self._last_progress_ms + int(elapsed * 1000), total)
+        return self._last_progress_ms
+
+    def _update_eq(self, is_playing, now_t):
+        """Animate equalizer bar heights for the currently playing track."""
+        if now_t - self._eq_last_update > 0.12:
+            self._eq_last_update = now_t
+            if is_playing:
+                self._eq_targets = [0.3 + 0.7 * random.random() for _ in range(4)]
+            else:
+                self._eq_targets = [0.1 for _ in range(4)]
+        # Smooth interpolation toward targets
+        for i in range(4):
+            self._eq_bars[i] += (self._eq_targets[i] - self._eq_bars[i]) * 0.25
+
     def render(self, frame, state, gesture, progress, enabled, demo=False):
-        scale = self.output_scale * 2
+        scale = self.output_scale
         self.prepare_fonts(scale)
 
         # Use cached chrome or rebuild on scale change
@@ -222,12 +295,20 @@ class MusicUI:
             d.rounded_rectangle((x, y, x+size, y+size), radius=radius,
                                 fill=self.ACCENT_GLOW)
             if art is not None:
-                target = (round(size*scale), round(size*scale))
-                view = ImageOps.contain(art, target, Image.Resampling.LANCZOS)
-                mask = Image.new('L', view.size, 0)
-                ImageDraw.Draw(mask).rounded_rectangle(
-                    (0, 0, view.width-1, view.height-1),
-                    radius=round(radius*scale), fill=255)
+                cache_key = (id(art), size, round(scale, 2))
+                cached = self._art_cache.get(cache_key)
+                if cached is None:
+                    target = (round(size*scale), round(size*scale))
+                    view = ImageOps.contain(art, target, Image.Resampling.BILINEAR)
+                    mask = Image.new('L', view.size, 0)
+                    ImageDraw.Draw(mask).rounded_rectangle(
+                        (0, 0, view.width-1, view.height-1),
+                        radius=round(radius*scale), fill=255)
+                    cached = (view, mask)
+                    if len(self._art_cache) > 20:
+                        self._art_cache.clear()
+                    self._art_cache[cache_key] = cached
+                view, mask = cached
                 px = round((x+size/2)*scale) - view.width//2
                 py = round((y+size/2)*scale) - view.height//2
                 screen.paste(view, (px, py), mask)
@@ -240,6 +321,17 @@ class MusicUI:
         def duration(ms):
             seconds = max(0, int(ms or 0))//1000
             return f'{seconds//60}:{seconds%60:02d}'
+
+        def draw_equalizer(x, y, bar_width, max_height, is_playing):
+            """Draw animated dancing equalizer bars."""
+            self._update_eq(is_playing, now_t)
+            gap = 2
+            for i, h_frac in enumerate(self._eq_bars):
+                bx = x + i * (bar_width + gap)
+                bar_h = max(2, h_frac * max_height)
+                by = y + max_height - bar_h
+                d.rounded_rectangle((bx, by, bx + bar_width, y + max_height),
+                                    radius=1, fill=accent)
 
         # ----- state --------------------------------------------------
         playback = state.get('playback') or {}
@@ -254,6 +346,7 @@ class MusicUI:
         self.library_count, self.track_count = len(playlists), len(rows)
         self.library_scroll = min(self.library_scroll, max(0, len(playlists)-8))
         self.track_scroll = min(self.track_scroll, max(0, len(rows)-6))
+        is_playing = bool(playback.get('is_playing'))
 
         # ===== TOP BAR ================================================
         # Logo with ambient glow
@@ -355,8 +448,12 @@ class MusicUI:
             elif self.hovered == action:
                 d.rounded_rectangle((264, y-2, 829, y+39), radius=4,
                                     fill=self.HOVER)
-            text(272, y+8, str(row['position']+1), 12,
-                 accent if active else muted)
+            # Track number or equalizer animation for active track
+            if active and is_playing:
+                draw_equalizer(272, y+6, 4, 22, True)
+            else:
+                text(272, y+8, str(row['position']+1), 12,
+                     accent if active else muted)
             text(306, y, track.get('name') or 'Unavailable song', 14,
                  accent if active else primary if row.get('playable') else muted,
                  282)
@@ -397,11 +494,16 @@ class MusicUI:
         # Camera frame with subtle border
         d.rounded_rectangle((873, 128, 1173, 376), radius=8,
                             fill='#0a0a14', outline=self.PANEL_BORDER)
-        view = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        view = ImageOps.contain(view, (round(296*scale), round(244*scale)),
-                                Image.Resampling.LANCZOS)
-        screen.paste(view, (round(1023*scale)-view.width//2,
-                            round(252*scale)-view.height//2))
+        # Fast OpenCV camera resize preserving aspect ratio without distortion
+        max_w, max_h = round(296 * scale), round(244 * scale)
+        fh, fw = frame.shape[:2]
+        ratio = min(max_w / max(1, fw), max_h / max(1, fh))
+        nw, nh = max(1, round(fw * ratio)), max(1, round(fh * ratio))
+        cam_resized = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                                 (nw, nh), interpolation=cv2.INTER_LINEAR)
+        view = Image.fromarray(cam_resized)
+        screen.paste(view, (round(1023*scale) - nw//2,
+                            round(252*scale) - nh//2))
         text(878, 388,
              'LIVE CONTROL' if enabled else 'GESTURES DISABLED',
              12, accent if enabled else muted)
@@ -419,7 +521,7 @@ class MusicUI:
                                 fill=accent)
         # Gesture hint cards
         for n, (title, hint) in enumerate([
-                ('Swipe left / right', 'Next / previous song'),
+                ('Point right / left', 'Next / previous song'),
                 ('Two fingers / one finger', 'Volume up / down'),
                 ('Open palm / thumbs-up', 'Pause / resume')]):
             y = 468 + n*60
@@ -442,11 +544,15 @@ class MusicUI:
              ', '.join(a.get('name', '') for a in item.get('artists', []))
              or 'Start a song in Spotify', 12, width=265)
         self.buttons.append(((18, 728, 351, 785), 'open_track'))
-        is_playing = bool(playback.get('is_playing'))
+
+        # Playback controls
         icon_button((472, 722, 520, 762), 'previous', 'previous')
         icon_button((532, 718, 580, 766), 'pause' if is_playing else 'play', 'toggle', selected=True, radius=24)
         icon_button((592, 722, 640, 762), 'next', 'next')
-        position, total = playback.get('progress_ms') or 0, item.get('duration_ms') or 0
+
+        # Continuous interpolated progress bar
+        position = self._interpolate_position(playback, item, now_t)
+        total = item.get('duration_ms') or 0
         text(376, 772, duration(position), 12)
         d.rounded_rectangle((420, 779, 694, 783), radius=2, fill=self.PROGRESS_BG)
         if total and position:
@@ -456,10 +562,34 @@ class MusicUI:
                                 fill=self.ACCENT_GLOW)
             d.rounded_rectangle((420, 779, 420+pw, 783), radius=2, fill=accent)
         text(708, 772, duration(total), 12)
-        text(820, 734, device.get('name') or 'No active device', 12, width=230)
-        text(820, 758, f'Volume {device.get("volume_percent", "--")}%', 14, primary)
-        button((1058, 738, 1112, 777), '- 5', 'quieter')
-        button((1122, 738, 1176, 777), '+ 5', 'louder')
+
+        # Active device name and equalizer
+        text(820, 730, device.get('name') or 'No active device', 12, width=230)
+        if is_playing:
+            draw_equalizer(820, 750, 3, 14, True)
+        text(842, 750, 'Playing' if is_playing else 'Paused', 12,
+             accent if is_playing else muted)
+
+        # Volume slider
+        volume = device.get('volume_percent')
+        if volume is not None:
+            # Volume icon
+            d.polygon([(822, 775), (828, 775), (835, 770), (835, 785), (828, 780), (822, 780)],
+                      fill=muted)
+            # Slider track
+            d.rounded_rectangle((842, 780, 1042, 784), radius=2, fill=self.VOLUME_TRACK)
+            # Filled portion
+            fill_w = int(200 * volume / 100)
+            if fill_w > 0:
+                d.rounded_rectangle((842, 780, 842 + fill_w, 784), radius=2,
+                                    fill=self.VOLUME_FILL)
+            # Knob
+            knob_x = 842 + fill_w
+            d.ellipse((knob_x - 5, 778, knob_x + 5, 788), fill=self.VOLUME_KNOB)
+            # Percentage label
+            text(1050, 775, f'{volume}%', 12, primary)
+        else:
+            text(820, 775, 'Volume --', 12)
 
         # ===== FINAL RESIZE (cv2 is much faster than PIL Lanczos) =====
         arr = cv2.cvtColor(np.asarray(screen), cv2.COLOR_RGB2BGR)

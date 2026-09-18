@@ -15,8 +15,10 @@ from urllib.parse import urlencode, urlsplit, parse_qs
 from urllib.request import Request, urlopen
 import webbrowser
 
+from pathlib import Path
 from PIL import Image
 
+ROOT = Path(__file__).resolve().parent
 REDIRECT_URI = 'http://127.0.0.1:8888/callback'
 SCOPES = ('user-read-playback-state user-modify-playback-state '
           'playlist-read-private playlist-read-collaborative')
@@ -38,7 +40,7 @@ def describe_error(error):
     if isinstance(reason, ssl.SSLCertVerificationError):
         return 'Spotify TLS certificate check failed. Check system date and HTTPS inspection settings.'
     if isinstance(reason, (TimeoutError, socket.timeout)):
-        return 'Spotify request timed out. Retrying shortly.'
+        return 'Spotify request timed out. Check your internet connection.'
     if isinstance(reason, socket.gaierror):
         return 'Cannot resolve Spotify server address (DNS). Check DNS or VPN settings.'
     code = getattr(reason, 'winerror', None) or getattr(reason, 'errno', None)
@@ -60,6 +62,16 @@ class SpotifyClient:
         self.client_id = client_id
         self.access_token = self.refresh_token = None
         self.expires = self.retry_at = 0
+        config_path = ROOT / 'spotify_config.json'
+        token_path = ROOT / '.spotify_token.json'
+        if token_path.exists() and config_path.exists():
+            try:
+                cfg = json.loads(config_path.read_text())
+                if cfg.get('client_id') == client_id:
+                    saved = json.loads(token_path.read_text())
+                    self.refresh_token = saved.get('refresh_token')
+            except Exception:
+                pass
 
     def token(self, fields):
         fields['client_id'] = self.client_id
@@ -74,6 +86,11 @@ class SpotifyClient:
         self.access_token = data['access_token']
         self.refresh_token = data.get('refresh_token', self.refresh_token)
         self.expires = time.monotonic() + data['expires_in'] - 60
+        if self.refresh_token:
+            try:
+                (ROOT / '.spotify_token.json').write_text(json.dumps({'refresh_token': self.refresh_token}))
+            except Exception:
+                pass
 
     def login(self, stop):
         if not self.client_id:
@@ -271,9 +288,15 @@ class PlaybackWorker:
                 except queue.Empty:
                     action = None
                 if action == 'connect':
-                    self.set(busy=True, message='Finish signing in in your browser')
+                    self.set(busy=True, message='Connecting to Spotify...')
                     try:
-                        self.client.login(self.stop)
+                        if self.client.refresh_token and not self.client.access_token:
+                            try:
+                                self.client.token(dict(grant_type='refresh_token', refresh_token=self.client.refresh_token))
+                            except Exception:
+                                self.client.login(self.stop)
+                        else:
+                            self.client.login(self.stop)
                     finally:
                         self.set(busy=False)
                     if self.stop.is_set():
