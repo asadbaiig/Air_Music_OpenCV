@@ -45,7 +45,7 @@ def describe_error(error):
         return 'Cannot resolve Spotify server address (DNS). Check DNS or VPN settings.'
     code = getattr(reason, 'winerror', None) or getattr(reason, 'errno', None)
     if code in (10048, 98, 48):
-        return 'Login port 8888 is busy. Close other Air Music instances, then reconnect.'
+        return 'Login port 8888 is busy. Close other Handsfree instances, then reconnect.'
     if code in (10013, 13):
         return 'Connection permission denied. Check firewall or security software access for Python.'
     if isinstance(reason, ConnectionRefusedError):
@@ -110,10 +110,10 @@ class SpotifyClient:
                 self.send_header('Content-Type', 'text/plain; charset=utf-8')
                 self.end_headers()
                 if not valid:
-                    self.wfile.write(b'Invalid callback. Return to Air Music and reconnect.')
+                    self.wfile.write(b'Invalid callback. Return to Handsfree and reconnect.')
                     return
                 result.update(code=query.get('code', [None])[0], error=query.get('error', [None])[0])
-                self.wfile.write(b'You can return to Air Music. It will finish connecting shortly.')
+                self.wfile.write(b'You can return to Handsfree. It will finish connecting shortly.')
 
         with HTTPServer(('127.0.0.1', 8888), Callback) as server:
             server.timeout = 0.5

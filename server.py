@@ -1,4 +1,4 @@
-"""Air Music Web Server. Bridges OpenCV camera and MediaPipe gestures to React frontend."""
+"""Handsfree Web Server. Bridges OpenCV camera and MediaPipe gestures to React frontend."""
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
@@ -137,7 +137,7 @@ def ensure_model():
 
 def demo_state():
     playlists = [{'id': 'demo'+str(i), 'uri': 'spotify:playlist:demo'+str(i), 'name': name,
-                  'owner': {'display_name': 'Air Music demo'}} for i, name in enumerate(
+                  'owner': {'display_name': 'Handsfree demo'}} for i, name in enumerate(
                   ('Late night focus', 'Morning light', 'On repeat', 'Weekend drive', 'Quiet hours'))]
     tracks = [{'track': {'uri': 'spotify:track:demo'+str(i), 'name': name,
                          'artists': [{'name': artist}], 'album': {'name': album}, 'duration_ms': 180000+i*11000},
@@ -182,7 +182,7 @@ class AppState:
                 return
 
             if action == 'connect':
-                print('[Air Music] Connect requested! Initiating Spotify sign-in flow...')
+                print('[Handsfree] Connect requested! Initiating Spotify sign-in flow...')
                 self.demo = False
                 if not self.worker:
                     self.worker = PlaybackWorker(self.client_id)
@@ -294,7 +294,7 @@ async def lifespan(app: FastAPI):
     task.cancel()
 
 
-app = FastAPI(title='Air Music Backend', lifespan=lifespan)
+app = FastAPI(title='Handsfree Backend', lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -466,7 +466,7 @@ def find_available_port(target_port=8000, max_attempts=10):
 
 def run_server():
     global state_manager
-    parser = argparse.ArgumentParser(description='Air Music Web Backend')
+    parser = argparse.ArgumentParser(description='Handsfree Web Backend')
     parser.add_argument('--camera', type=int, default=0)
     parser.add_argument('--backend', choices=('dshow', 'msmf', 'auto'), default='dshow' if os.name == 'nt' else 'auto')
     parser.add_argument('--client-id', default=os.environ.get('SPOTIFY_CLIENT_ID', ''))
@@ -511,7 +511,7 @@ def run_server():
         threading.Timer(1.2, lambda: webbrowser.open(f'http://localhost:{port}')).start()
 
     import uvicorn
-    print(f'Starting Air Music Web Server on http://localhost:{port}...')
+    print(f'Starting Handsfree Web Server on http://localhost:{port}...')
     uvicorn.run(app, host='127.0.0.1', port=port, log_level='warning')
 
 

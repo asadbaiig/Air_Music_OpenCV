@@ -29,7 +29,7 @@ from music_ui import MusicUI
 from spotify_client import PlaybackWorker
 
 ROOT = Path(__file__).resolve().parent
-WINDOW = 'Air Music'
+WINDOW = 'Handsfree'
 
 # MediaPipe hand skeleton bone connections for drawing
 HAND_CONNECTIONS = [
@@ -147,7 +147,7 @@ def ensure_model():
 
 def demo_state():
     playlists = [{'id': 'demo'+str(i), 'uri': 'spotify:playlist:demo'+str(i), 'name': name,
-                  'owner': {'display_name': 'Air Music demo'}} for i,name in enumerate(
+                  'owner': {'display_name': 'Handsfree demo'}} for i,name in enumerate(
                   ('Late night focus', 'Morning light', 'On repeat', 'Weekend drive', 'Quiet hours'))]
     tracks = [{'track': {'uri': 'spotify:track:demo'+str(i), 'name': name,
                          'artists': [{'name': artist}], 'album': {'name': album}, 'duration_ms': 180000+i*11000},
@@ -338,4 +338,4 @@ if __name__ == '__main__':
     try:
         main()
     except (OSError, ValueError, RuntimeError, cv2.error) as error:
-        raise SystemExit(f'Air Music: {error}')
+        raise SystemExit(f'Handsfree: {error}')

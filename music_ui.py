@@ -1,4 +1,4 @@
-"""Air Music desktop dashboard. Artwork is displayed uncropped and unmodified."""
+"""Handsfree desktop dashboard. Artwork is displayed uncropped and unmodified."""
 from pathlib import Path
 import math
 import random
@@ -352,9 +352,9 @@ class MusicUI:
         # Logo with ambient glow
         d.ellipse((16, 14, 56, 54), fill=self.ACCENT_GLOW)
         d.ellipse((20, 18, 52, 50), fill=accent)
-        text(29, 21, 'a', 20, '#000000')
-        text(64, 18, 'Air Music', 28, primary)
-        text(250, 27, 'Music, with a wave of your hand.', 14)
+        text(28, 20, 'H', 20, '#000000')
+        text(64, 18, 'Handsfree', 28, primary)
+        text(240, 27, 'Touchless music, powered by vision.', 14)
         button((772, 16, 962, 58),
                'Gestures on' if enabled else 'Enable gestures', 'gestures', enabled)
         button((974, 16, 1188, 58),

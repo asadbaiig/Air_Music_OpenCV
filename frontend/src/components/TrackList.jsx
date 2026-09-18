@@ -23,7 +23,7 @@ export function TrackList({ state, onAction }) {
         <div className="banner-meta">
           <h2>{selected_playlist?.name || 'All Tracks'}</h2>
           <p>
-            {tracks.length} songs • {selected_playlist?.owner?.display_name || 'Air Music Library'}
+            {tracks.length} songs • {selected_playlist?.owner?.display_name || 'Handsfree Library'}
           </p>
         </div>
       </div>

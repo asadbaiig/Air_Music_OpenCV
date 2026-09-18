@@ -7,12 +7,12 @@ export function Navbar({ state, wsConnected, onAction }) {
   return (
     <header className="navbar">
       <div className="brand">
-        <div className="brand-icon">
-          <Waves size={22} strokeWidth={2.5} />
+        <div className="brand-logo-wrapper">
+          <img src="/favicon.svg" alt="Handsfree Logo" className="brand-logo-img" />
         </div>
         <div className="brand-text">
-          <h1>Air Music</h1>
-          <p>Gesture-Controlled Spotify Remote</p>
+          <h1>Handsfree</h1>
+          <p>Touchless Music Experience</p>
         </div>
       </div>
 
